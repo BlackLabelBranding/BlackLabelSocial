@@ -128,7 +128,7 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
     if (!workspaceId || !userId) {
       setSubmitting(false);
       setStatusMsg(
-        "Workspace not loaded. Open Black Label Social from the client portal."
+        "Workspace not loaded. Open Black Label Social from the client portal or create a workspace first."
       );
       setStatusType("error");
       return;
@@ -139,9 +139,7 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
       if (!scheduledDate) {
         return new Date(); // now
       }
-      // If no time, default to 09:00 local
       const time = scheduledTime || "09:00";
-      // Safe ISO string
       return new Date(`${scheduledDate}T${time}:00`);
     })();
 
@@ -168,8 +166,7 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
           } on ${selectedPlatforms.join(", ")}.`
         );
         setStatusType("success");
-        // Optional: clear fields after scheduling
-        // setCaption("");
+        // setCaption(""); // uncomment if you want to clear after save
       }
     } catch (err: any) {
       console.error(err);
@@ -434,7 +431,11 @@ function DashboardInner() {
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const workspaceIdQuery = searchParams.get("workspaceId");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const workspaceIdParam = searchParams.get("workspaceId");
 
   useEffect(() => {
     async function load() {
@@ -446,27 +447,109 @@ function DashboardInner() {
 
       setUserId(auth.user.id);
 
-      if (!workspaceIdQuery) {
-        // No workspace specified – show generic UI but disable scheduling.
-        setLoading(false);
-        return;
+      let effectiveWorkspaceId = workspaceIdParam ?? null;
+
+      // If no workspaceId in URL, try to find the first workspace for this user.
+      if (!effectiveWorkspaceId) {
+        const { data: member, error: memberError } = await supabase
+          .from("workspace_members")
+          .select("workspace_id")
+          .eq("user_id", auth.user.id)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (!memberError && member && member.workspace_id) {
+          effectiveWorkspaceId = member.workspace_id as string;
+          // Update the URL so future reloads/bookmarks have it.
+          router.replace(`/app?workspaceId=${effectiveWorkspaceId}`);
+        }
       }
 
-      const { data, error } = await supabase
-        .from("workspaces")
-        .select("id, name")
-        .eq("id", workspaceIdQuery)
-        .single();
+      if (effectiveWorkspaceId) {
+        const { data, error } = await supabase
+          .from("workspaces")
+          .select("id, name")
+          .eq("id", effectiveWorkspaceId)
+          .single();
 
-      if (!error && data) {
-        setWorkspace(data as Workspace);
+        if (!error && data) {
+          setWorkspace(data as Workspace);
+        }
       }
 
       setLoading(false);
     }
 
     load();
-  }, [workspaceIdQuery, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceIdParam, router]);
+
+  const canSchedule = !!workspace && !!userId;
+
+  const handleCreateWorkspace = async (e: FormEvent) => {
+    e.preventDefault();
+    setCreateError(null);
+
+    if (!newWorkspaceName.trim()) {
+      setCreateError("Enter a workspace name (usually the business name).");
+      return;
+    }
+    if (!userId) {
+      setCreateError("User not loaded yet.");
+      return;
+    }
+
+    try {
+      setCreatingWorkspace(true);
+
+      const { data: ws, error: wsError } = await supabase
+        .from("workspaces")
+        .insert({
+          name: newWorkspaceName.trim(),
+        })
+        .select("id, name")
+        .single();
+
+      if (wsError || !ws) {
+        console.error(wsError);
+        setCreateError(
+          wsError?.message || "Failed to create workspace. Try again."
+        );
+        setCreatingWorkspace(false);
+        return;
+      }
+
+      const { error: memberError } = await supabase
+        .from("workspace_members")
+        .insert({
+          workspace_id: ws.id,
+          user_id: userId,
+          role: "owner",
+        });
+
+      if (memberError) {
+        console.error(memberError);
+        setCreateError(
+          memberError.message ||
+            "Workspace created but failed to link to your account."
+        );
+        setCreatingWorkspace(false);
+        return;
+      }
+
+      setWorkspace(ws as Workspace);
+      setNewWorkspaceName("");
+      setCreatingWorkspace(false);
+
+      // Update URL so the composer can use it.
+      router.replace(`/app?workspaceId=${ws.id}`);
+    } catch (err: any) {
+      console.error(err);
+      setCreateError("Unexpected error creating workspace.");
+      setCreatingWorkspace(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -475,8 +558,6 @@ function DashboardInner() {
       </main>
     );
   }
-
-  const canSchedule = !!workspace && !!userId;
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
@@ -531,15 +612,55 @@ function DashboardInner() {
 
       {/* Main content */}
       <section className="p-6 space-y-5">
-        {canSchedule ? (
-          <PostComposer workspaceId={workspace!.id} userId={userId!} />
-        ) : (
-          <div className="max-w-4xl mx-auto mb-4 rounded-xl border border-amber-700 bg-amber-950/40 px-4 py-3 text-[11px] text-amber-100">
-            No active workspace detected. To fully use Black Label Social,
-            open it from a client portal link so we know which brand you&apos;re
-            scheduling for (we&apos;ll pass a workspaceId in the URL).
+        {!canSchedule && (
+          <div className="max-w-4xl mx-auto mb-4 space-y-3">
+            <div className="rounded-xl border border-amber-700 bg-amber-950/40 px-4 py-3 text-[11px] text-amber-100">
+              No active workspace detected. If you came here directly, create a
+              workspace below. If you&apos;re a Black Label Branding client, you can
+              also open Black Label Social from your client portal so we know
+              which brand you&apos;re scheduling for.
+            </div>
+
+            {userId && (
+              <form
+                onSubmit={handleCreateWorkspace}
+                className="rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-[11px] space-y-2"
+              >
+                <p className="text-slate-200 font-medium">
+                  Create your first workspace
+                </p>
+                <p className="text-slate-400">
+                  This is usually the business or brand name (you can add more
+                  workspaces later for other brands).
+                </p>
+                <div className="flex flex-col sm:flex-row gap-2 mt-1">
+                  <input
+                    type="text"
+                    className="flex-1 rounded-md border border-slate-700 bg-slate-950/70 px-3 py-2 text-xs text-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
+                    placeholder="e.g. Black Label Branding, Rebel Liz, Garza Unlimited"
+                    value={newWorkspaceName}
+                    onChange={(e) => {
+                      setNewWorkspaceName(e.target.value);
+                      setCreateError(null);
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={creatingWorkspace || !newWorkspaceName.trim()}
+                    className="px-4 py-2 rounded-md bg-white text-slate-950 text-xs font-medium disabled:opacity-60"
+                  >
+                    {creatingWorkspace ? "Creating..." : "Create workspace"}
+                  </button>
+                </div>
+                {createError && (
+                  <p className="text-red-300 mt-1">{createError}</p>
+                )}
+              </form>
+            )}
           </div>
         )}
+
+        {canSchedule && <PostComposer workspaceId={workspace!.id} userId={userId!} />}
 
         <div className="grid gap-4 md:grid-cols-2 max-w-6xl mx-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -557,7 +678,8 @@ function DashboardInner() {
               Next features we&apos;ll wire up:
             </p>
             <ul className="text-xs text-slate-300 space-y-1">
-              <li>• Save scheduled posts to Supabase per workspace (now started!)</li>
+              <li>• Save scheduled posts to Supabase per workspace (already live!)</li>
+              <li>• Scheduled posts list & filters</li>
               <li>• Calendar view with drag-to-reschedule</li>
               <li>• Real AI caption generator with tone presets</li>
               <li>• Per-platform variations and asset management</li>
@@ -582,5 +704,3 @@ export default function DashboardPage() {
     </Suspense>
   );
 }
-
-
