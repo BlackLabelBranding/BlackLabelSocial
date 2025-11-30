@@ -30,7 +30,12 @@ function classNames(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
 
-function PostComposer() {
+type PostComposerProps = {
+  workspaceId: string;
+  userId: string;
+};
+
+function PostComposer({ workspaceId, userId }: PostComposerProps) {
   const [caption, setCaption] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>([
     "X",
@@ -49,7 +54,6 @@ function PostComposer() {
 
   const maxXChars = 280;
   const charCount = caption.length;
-  const remaining = maxXChars - charCount;
   const hashtagCount =
     caption.match(/#[\p{L}\d_]+/gu)?.length ?? 0; // counts #hashtags
   const wordCount =
@@ -101,7 +105,7 @@ function PostComposer() {
     setStatusType("success");
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setStatusMsg(null);
@@ -121,16 +125,59 @@ function PostComposer() {
       return;
     }
 
-    // For now just simulate saving – later we’ll insert into Supabase `scheduled_posts`.
-    setTimeout(() => {
+    if (!workspaceId || !userId) {
       setSubmitting(false);
       setStatusMsg(
-        `Post scheduled for ${scheduledDate || "today"} ${
-          scheduledTime || ""
-        } on ${selectedPlatforms.join(", ")}. (UI-only for now – not yet saved to DB.)`
+        "Workspace not loaded. Open Black Label Social from the client portal."
       );
-      setStatusType("success");
-    }, 600);
+      setStatusType("error");
+      return;
+    }
+
+    // Build scheduled datetime
+    const scheduledFor = (() => {
+      if (!scheduledDate) {
+        return new Date(); // now
+      }
+      // If no time, default to 09:00 local
+      const time = scheduledTime || "09:00";
+      // Safe ISO string
+      return new Date(`${scheduledDate}T${time}:00`);
+    })();
+
+    try {
+      const { error } = await supabase.from("scheduled_posts").insert({
+        workspace_id: workspaceId,
+        user_id: userId,
+        caption,
+        platforms: selectedPlatforms,
+        scheduled_for: scheduledFor.toISOString(),
+        status: "scheduled",
+      });
+
+      if (error) {
+        console.error(error);
+        setStatusMsg(
+          error.message || "Something went wrong saving this scheduled post."
+        );
+        setStatusType("error");
+      } else {
+        setStatusMsg(
+          `Post scheduled for ${scheduledDate || "today"} ${
+            scheduledTime || ""
+          } on ${selectedPlatforms.join(", ")}.`
+        );
+        setStatusType("success");
+        // Optional: clear fields after scheduling
+        // setCaption("");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setStatusMsg("Network error while saving scheduled post.");
+      setStatusType("error");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -143,8 +190,8 @@ function PostComposer() {
               <h2 className="text-sm font-semibold">Create a post</h2>
               <p className="text-xs text-slate-400 mt-1 max-w-xl">
                 Choose platforms, write your caption, and schedule it. This is the
-                first version of the composer – we&apos;ll plug it into Supabase and
-                real social APIs next.
+                first version of the composer – we&apos;ll plug it into real social
+                APIs next.
               </p>
             </div>
             <div className="hidden md:flex flex-col items-end gap-1 text-[11px] text-slate-400">
@@ -321,8 +368,7 @@ function PostComposer() {
             <div>
               <h2 className="text-sm font-semibold">Preview</h2>
               <p className="text-[11px] text-slate-400">
-                This is a rough visual preview. We&apos;ll refine per-platform styling
-                later.
+                Rough visual preview. We&apos;ll refine per-platform styling later.
               </p>
             </div>
             <div className="flex flex-col items-end text-[11px] text-slate-400">
@@ -385,9 +431,10 @@ function DashboardInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const workspaceId = searchParams.get("workspaceId");
+  const workspaceIdQuery = searchParams.get("workspaceId");
 
   useEffect(() => {
     async function load() {
@@ -397,23 +444,29 @@ function DashboardInner() {
         return;
       }
 
-      if (workspaceId) {
-        const { data, error } = await supabase
-          .from("workspaces")
-          .select("id, name")
-          .eq("id", workspaceId)
-          .single();
+      setUserId(auth.user.id);
 
-        if (!error && data) {
-          setWorkspace(data as Workspace);
-        }
+      if (!workspaceIdQuery) {
+        // No workspace specified – show generic UI but disable scheduling.
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("workspaces")
+        .select("id, name")
+        .eq("id", workspaceIdQuery)
+        .single();
+
+      if (!error && data) {
+        setWorkspace(data as Workspace);
       }
 
       setLoading(false);
     }
 
     load();
-  }, [workspaceId, router]);
+  }, [workspaceIdQuery, router]);
 
   if (loading) {
     return (
@@ -422,6 +475,8 @@ function DashboardInner() {
       </main>
     );
   }
+
+  const canSchedule = !!workspace && !!userId;
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
@@ -476,7 +531,15 @@ function DashboardInner() {
 
       {/* Main content */}
       <section className="p-6 space-y-5">
-        <PostComposer />
+        {canSchedule ? (
+          <PostComposer workspaceId={workspace!.id} userId={userId!} />
+        ) : (
+          <div className="max-w-4xl mx-auto mb-4 rounded-xl border border-amber-700 bg-amber-950/40 px-4 py-3 text-[11px] text-amber-100">
+            No active workspace detected. To fully use Black Label Social,
+            open it from a client portal link so we know which brand you&apos;re
+            scheduling for (we&apos;ll pass a workspaceId in the URL).
+          </div>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2 max-w-6xl mx-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -494,7 +557,7 @@ function DashboardInner() {
               Next features we&apos;ll wire up:
             </p>
             <ul className="text-xs text-slate-300 space-y-1">
-              <li>• Save scheduled posts to Supabase per workspace</li>
+              <li>• Save scheduled posts to Supabase per workspace (now started!)</li>
               <li>• Calendar view with drag-to-reschedule</li>
               <li>• Real AI caption generator with tone presets</li>
               <li>• Per-platform variations and asset management</li>
@@ -519,3 +582,5 @@ export default function DashboardPage() {
     </Suspense>
   );
 }
+
+
