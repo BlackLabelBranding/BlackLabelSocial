@@ -33,6 +33,7 @@ type ScheduledPost = {
   scheduled_for: string;
   status: string;
   created_at: string;
+  image_path: string | null;
 };
 
 function classNames(...classes: (string | false | null | undefined)[]) {
@@ -48,6 +49,14 @@ function formatDateTime(iso: string) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function isSameDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 type PostComposerProps = {
@@ -72,6 +81,11 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
   const [selectedTemplateIndex, setSelectedTemplateIndex] = useState<
     number | null
   >(null);
+
+  // image upload state
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imagePath, setImagePath] = useState<string | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
 
   const maxXChars = 280;
   const charCount = caption.length;
@@ -103,16 +117,6 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
     );
   };
 
-  const handleGenerateAI = () => {
-    const sample =
-      "We’re leveling up social media for our brand with Black Label Social. 🚀\n\n" +
-      "Schedule posts, stay consistent, and keep your message in front of the right people.\n\n" +
-      "#BlackLabelSocial #Marketing #ContentStrategy";
-    setCaption(sample);
-    setStatusMsg("Sample AI-style caption inserted (placeholder).");
-    setStatusType("success");
-  };
-
   const handleApplyTemplate = (index: number) => {
     setSelectedTemplateIndex(index);
     const template = QUICK_TEMPLATES[index];
@@ -123,6 +127,55 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
     }
     setStatusMsg("Template added to your caption.");
     setStatusType("success");
+  };
+
+  const handleImageChange = async (
+    e: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setStatusMsg(null);
+    setStatusType(null);
+    setUploadingImage(true);
+
+    try {
+      // Local preview
+      const localUrl = URL.createObjectURL(file);
+      setImagePreviewUrl(localUrl);
+
+      const ext = file.name.split(".").pop();
+      const fileName = `${workspaceId}/${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}.${ext}`;
+
+      const { error, data } = await supabase.storage
+        .from("social_posts")
+        .upload(fileName, file, {
+          upsert: false,
+        });
+
+      if (error) {
+        console.error(error);
+        setStatusMsg(
+          error.message || "Failed to upload image. Try again."
+        );
+        setStatusType("error");
+        setUploadingImage(false);
+        return;
+      }
+
+      setImagePath(data?.path ?? fileName);
+
+      setStatusMsg("Image attached to this post.");
+      setStatusType("success");
+    } catch (err: any) {
+      console.error(err);
+      setStatusMsg("Unexpected error uploading image.");
+      setStatusType("error");
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -168,6 +221,7 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
         platforms: selectedPlatforms,
         scheduled_for: scheduledFor.toISOString(),
         status: "scheduled",
+        image_path: imagePath,
       });
 
       if (error) {
@@ -183,9 +237,11 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
           } on ${selectedPlatforms.join(", ")}.`
         );
         setStatusType("success");
-        onScheduled?.(); // refresh list
-        // optional: clear caption
+        onScheduled?.();
+        // optional reset
         // setCaption("");
+        // setImagePath(null);
+        // setImagePreviewUrl(null);
       }
     } catch (err: any) {
       console.error(err);
@@ -196,18 +252,22 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
     }
   };
 
+  // Build simple previews per platform
+  const platformsToPreview: Platform[] = selectedPlatforms.length
+    ? selectedPlatforms
+    : ["X", "Instagram", "Facebook"];
+
   return (
     <section className="space-y-4 max-w-6xl mx-auto">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)]">
         {/* Left: Composer */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 md:p-6 shadow-xl shadow-black/40 backdrop-blur-sm">
+        <div className="bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 border border-slate-800 rounded-2xl p-4 md:p-6 shadow-xl shadow-black/40 backdrop-blur-sm">
           <div className="flex items-start justify-between gap-4 mb-4">
             <div>
               <h2 className="text-sm font-semibold">Create a post</h2>
               <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                Choose platforms, write your caption, and schedule it. This is the
-                first version of the composer – we&apos;ll plug it into real social
-                APIs next.
+                Choose platforms, write your caption, add a photo, and schedule
+                it for your brand.
               </p>
             </div>
             <div className="hidden md:flex flex-col items-end gap-1 text-[11px] text-slate-400">
@@ -285,9 +345,32 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
               {charCount > maxXChars && (
                 <p className="text-[11px] text-red-400 mt-1">
                   X.com limit exceeded by {charCount - maxXChars} characters.
-                  Later we&apos;ll add auto-trimming and platform-specific versions.
+                  Later we&apos;ll add per-platform variants.
                 </p>
               )}
+            </div>
+
+            {/* Image upload */}
+            <div className="space-y-2">
+              <span className="text-[11px] font-medium text-slate-300">
+                Photo (optional)
+              </span>
+              <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  className="text-[11px] text-slate-200 file:text-[11px] file:px-3 file:py-1.5 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:text-slate-100 file:mr-3"
+                />
+                {uploadingImage && (
+                  <span className="text-slate-400">Uploading image…</span>
+                )}
+                {imagePath && !uploadingImage && (
+                  <span className="px-2 py-1 rounded-full bg-emerald-900/40 border border-emerald-600 text-emerald-200">
+                    Image attached
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Quick templates */}
@@ -347,13 +430,6 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
             {/* Actions */}
             <div className="flex flex-wrap gap-3 items-center">
               <button
-                type="button"
-                onClick={handleGenerateAI}
-                className="text-xs px-3 py-2 rounded-md border border-slate-600 bg-slate-900 hover:bg-slate-800"
-              >
-                Generate with AI (placeholder)
-              </button>
-              <button
                 type="submit"
                 disabled={submitting || !caption.trim()}
                 className="text-xs px-4 py-2 rounded-md bg-white text-slate-950 font-medium disabled:opacity-60"
@@ -378,64 +454,78 @@ function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
           </form>
         </div>
 
-        {/* Right: Live preview */}
-        <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-lg shadow-black/30 backdrop-blur-sm">
-          <div className="flex items-center justify-between mb-3">
+        {/* Right: Multi-platform preview */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-lg shadow-black/30 backdrop-blur-sm space-y-3">
+          <div className="flex items-center justify-between mb-1">
             <div>
-              <h2 className="text-sm font-semibold">Preview</h2>
+              <h2 className="text-sm font-semibold">Previews</h2>
               <p className="text-[11px] text-slate-400">
-                Rough visual preview. We&apos;ll refine per-platform styling later.
+                Rough previews for each selected platform. We&apos;ll tighten the
+                details later.
               </p>
-            </div>
-            <div className="flex flex-col items-end text-[11px] text-slate-400">
-              <span>Primary platform:</span>
-              <span className="text-slate-100 font-medium">
-                {primaryPlatform ?? "None selected"}
-              </span>
             </div>
           </div>
 
-          <div className="border border-slate-700 rounded-xl bg-slate-950/80 p-4 space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-slate-200 to-slate-400" />
-              <div className="flex-1">
+          <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+            {platformsToPreview.map((platform) => (
+              <div
+                key={platform}
+                className="border border-slate-700 rounded-xl bg-slate-950/80 p-3 space-y-2"
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-slate-100 truncate">
-                    {primaryPlatform
-                      ? `${primaryPlatform} preview`
-                      : "Preview"}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-slate-200 to-slate-400" />
+                    <div>
+                      <p className="text-xs font-semibold text-slate-100">
+                        {platform} preview
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        @{platform.toLowerCase()}_brand
+                      </p>
+                    </div>
+                  </div>
                   <span className="text-[10px] text-slate-500">
                     {scheduledDate || "Unsched."}{" "}
                     {scheduledTime && `• ${scheduledTime}`}
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-400 truncate">
-                  @{primaryPlatform ? "yourbrand" : "select-platform"}
-                </p>
-              </div>
-            </div>
 
-            <div className="text-xs text-slate-100 whitespace-pre-wrap border-t border-slate-800 pt-3">
-              {caption.trim()
-                ? caption
-                : "Your caption will appear here as you type. Use templates or AI to jump-start ideas."}
-            </div>
+                {imagePreviewUrl && (
+                  <div className="mt-1">
+                    <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imagePreviewUrl}
+                        alt="Post preview"
+                        className={classNames(
+                          "w-full object-cover",
+                          platform === "Instagram" || platform === "TikTok"
+                            ? "aspect-square"
+                            : "aspect-video"
+                        )}
+                      />
+                    </div>
+                  </div>
+                )}
 
-            <div className="flex justify-between items-center pt-2 border-t border-slate-800">
-              <div className="flex gap-3 text-[11px] text-slate-500">
-                <span>❤️ 0</span>
-                <span>💬 0</span>
-                <span>🔁 0</span>
+                <div className="text-xs text-slate-100 whitespace-pre-wrap border-t border-slate-800 pt-2">
+                  {caption.trim()
+                    ? caption
+                    : "Your caption will appear here as you type."}
+                </div>
+
+                <div className="flex justify-between items-center pt-1 border-t border-slate-800">
+                  <div className="flex gap-3 text-[10px] text-slate-500">
+                    <span>❤️ 0</span>
+                    <span>💬 0</span>
+                    <span>🔁 0</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500">
+                    {platform}
+                  </span>
+                </div>
               </div>
-              <span className="text-[10px] text-slate-500">
-                {selectedPlatforms.length
-                  ? `${selectedPlatforms.length} platform${
-                      selectedPlatforms.length > 1 ? "s" : ""
-                    } selected`
-                  : "No platforms selected"}
-              </span>
-            </div>
+            ))}
           </div>
         </div>
       </div>
@@ -448,7 +538,10 @@ type ScheduledPostsListProps = {
   refreshToken: number;
 };
 
-function ScheduledPostsList({ workspaceId, refreshToken }: ScheduledPostsListProps) {
+function ScheduledPostsList({
+  workspaceId,
+  refreshToken,
+}: ScheduledPostsListProps) {
   const [posts, setPosts] = useState<ScheduledPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -463,7 +556,7 @@ function ScheduledPostsList({ workspaceId, refreshToken }: ScheduledPostsListPro
         .select("*")
         .eq("workspace_id", workspaceId)
         .order("scheduled_for", { ascending: true })
-        .limit(50);
+        .limit(100);
 
       if (error) {
         console.error(error);
@@ -494,14 +587,14 @@ function ScheduledPostsList({ workspaceId, refreshToken }: ScheduledPostsListPro
   };
 
   return (
-    <section className="max-w-6xl mx-auto mt-2">
+    <section className="max-w-6xl mx-auto mt-4">
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-lg shadow-black/30">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-sm font-semibold">Scheduled posts</h2>
             <p className="text-[11px] text-slate-400">
-              Upcoming posts for this workspace. Later we&apos;ll add editing,
-              duplication, and calendar drag-and-drop.
+              Upcoming posts for this workspace. We&apos;ll add editing and
+              duplication next.
             </p>
           </div>
         </div>
@@ -573,6 +666,177 @@ function ScheduledPostsList({ workspaceId, refreshToken }: ScheduledPostsListPro
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+type ScheduledPostsCalendarProps = {
+  workspaceId: string;
+  refreshToken: number;
+};
+
+function ScheduledPostsCalendar({
+  workspaceId,
+  refreshToken,
+}: ScheduledPostsCalendarProps) {
+  const [posts, setPosts] = useState<ScheduledPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [monthAnchor, setMonthAnchor] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("scheduled_posts")
+        .select("*")
+        .eq("workspace_id", workspaceId);
+
+      if (!error && data) {
+        setPosts(data as ScheduledPost[]);
+      }
+      setLoading(false);
+    }
+    load();
+  }, [workspaceId, refreshToken]);
+
+  const startOfMonth = new Date(
+    monthAnchor.getFullYear(),
+    monthAnchor.getMonth(),
+    1
+  );
+  const endOfMonth = new Date(
+    monthAnchor.getFullYear(),
+    monthAnchor.getMonth() + 1,
+    0
+  );
+
+  const startDay = new Date(startOfMonth);
+  startDay.setDate(startOfMonth.getDate() - startOfMonth.getDay()); // Sunday
+
+  const endDay = new Date(endOfMonth);
+  endDay.setDate(endOfMonth.getDate() + (6 - endOfMonth.getDay())); // Saturday
+
+  const days: Date[] = [];
+  for (
+    let d = new Date(startDay);
+    d <= endDay;
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
+  ) {
+    days.push(new Date(d));
+  }
+
+  const postsByDay = new Map<string, number>();
+  posts.forEach((post) => {
+    const d = new Date(post.scheduled_for);
+    const key = d.toDateString();
+    postsByDay.set(key, (postsByDay.get(key) || 0) + 1);
+  });
+
+  const monthLabel = monthAnchor.toLocaleString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+  return (
+    <section className="max-w-6xl mx-auto mt-4">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-lg shadow-black/30">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-sm font-semibold">Calendar</h2>
+            <p className="text-[11px] text-slate-400">
+              See which days have posts scheduled. We can add drag-to-reschedule
+              later.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-300">
+            <button
+              type="button"
+              onClick={() =>
+                setMonthAnchor(
+                  new Date(
+                    monthAnchor.getFullYear(),
+                    monthAnchor.getMonth() - 1,
+                    1
+                  )
+                )
+              }
+              className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-800"
+            >
+              ◀
+            </button>
+            <span>{monthLabel}</span>
+            <button
+              type="button"
+              onClick={() =>
+                setMonthAnchor(
+                  new Date(
+                    monthAnchor.getFullYear(),
+                    monthAnchor.getMonth() + 1,
+                    1
+                  )
+                )
+              }
+              className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-800"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+
+        {loading && (
+          <p className="text-[11px] text-slate-400">Loading calendar…</p>
+        )}
+
+        {!loading && (
+          <div className="grid grid-cols-7 gap-[2px] text-[11px]">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+              <div
+                key={d}
+                className="py-1 text-center text-slate-400 border-b border-slate-700"
+              >
+                {d}
+              </div>
+            ))}
+
+            {days.map((day) => {
+              const key = day.toDateString();
+              const count = postsByDay.get(key) || 0;
+              const inMonth = day.getMonth() === monthAnchor.getMonth();
+              const isToday = isSameDay(day, new Date());
+
+              return (
+                <div
+                  key={key}
+                  className={classNames(
+                    "min-h-[52px] border border-slate-800 px-1 py-1 flex flex-col",
+                    inMonth ? "bg-slate-950" : "bg-slate-950/40",
+                    isToday && "border-sky-500"
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={classNames(
+                        "text-[10px]",
+                        inMonth ? "text-slate-100" : "text-slate-500"
+                      )}
+                    >
+                      {day.getDate()}
+                    </span>
+                    {count > 0 && (
+                      <span className="text-[9px] px-1 rounded-full bg-emerald-900/60 text-emerald-200">
+                        {count}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -717,18 +981,17 @@ function DashboardInner() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
       {/* Top bar */}
-      <header className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
+      <header className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950">
         <div>
           <h1 className="text-lg font-semibold">
             {workspace ? workspace.name : "Black Label Social"}
           </h1>
           <p className="text-xs text-slate-400">
-            Scheduler dashboard – composer, counters, and calendar are under
-            construction.
+            Central hub for your scheduled social posts.
           </p>
         </div>
         <button
-          className="text-[11px] text-slate-400 underline"
+          className="text-[11px] text-slate-300 underline"
           onClick={async () => {
             await supabase.auth.signOut();
             router.push("/login");
@@ -745,14 +1008,14 @@ function DashboardInner() {
             <p className="text-[11px] text-slate-400">Today</p>
             <p className="text-base font-semibold">0 scheduled</p>
             <p className="text-[11px] text-slate-500 mt-1">
-              We&apos;ll pull real counts from Supabase once posts are saved.
+              Later we&apos;ll compute this from your posts.
             </p>
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2.5">
             <p className="text-[11px] text-slate-400">This week</p>
             <p className="text-base font-semibold">0 messages</p>
             <p className="text-[11px] text-slate-500 mt-1">
-              Use this to keep your brand visible across platforms.
+              Keep a consistent posting rhythm across platforms.
             </p>
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2.5">
@@ -792,7 +1055,7 @@ function DashboardInner() {
                   <input
                     type="text"
                     className="flex-1 rounded-md border border-slate-700 bg-slate-950/70 px-3 py-2 text-xs text-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
-                    placeholder="e.g. Black Label Branding, Print Art and More, Garza Unlimited"
+                    placeholder="e.g. Black Label Branding, Rebel Liz, Garza Unlimited"
                     value={newWorkspaceName}
                     onChange={(e) => {
                       setNewWorkspaceName(e.target.value);
@@ -826,35 +1089,17 @@ function DashboardInner() {
         )}
 
         {canSchedule && (
-          <ScheduledPostsList
-            workspaceId={workspace!.id}
-            refreshToken={postsRefreshToken}
-          />
+          <>
+            <ScheduledPostsCalendar
+              workspaceId={workspace!.id}
+              refreshToken={postsRefreshToken}
+            />
+            <ScheduledPostsList
+              workspaceId={workspace!.id}
+              refreshToken={postsRefreshToken}
+            />
+          </>
         )}
-
-        <div className="grid gap-4 md:grid-cols-2 max-w-6xl mx-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <h2 className="text-sm font-semibold mb-2">Quick actions</h2>
-            <ul className="text-xs text-slate-300 space-y-1">
-              <li>• Connect your social accounts (coming soon)</li>
-              <li>• Create your first scheduled post with the composer</li>
-              <li>• Duplicate high-performing posts across platforms</li>
-            </ul>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <h2 className="text-sm font-semibold mb-2">Roadmap for this page</h2>
-            <p className="text-xs text-slate-300 mb-1">
-              Next features we&apos;ll wire up:
-            </p>
-            <ul className="text-xs text-slate-300 space-y-1">
-              <li>• Calendar view with drag-to-reschedule</li>
-              <li>• Real AI caption generator with tone presets</li>
-              <li>• Per-platform variations and asset management</li>
-              <li>• Social account connections & auto-posting</li>
-            </ul>
-          </div>
-        </div>
       </section>
     </main>
   );
