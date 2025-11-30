@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -9,7 +9,7 @@ type Workspace = {
   name: string;
 };
 
-export default function DashboardPage() {
+function DashboardInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -32,7 +32,9 @@ export default function DashboardPage() {
           .eq("id", workspaceId)
           .single();
 
-        if (!error && data) setWorkspace(data as Workspace);
+        if (!error && data) {
+          setWorkspace(data as Workspace);
+        }
       }
 
       setLoading(false);
@@ -43,7 +45,7 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
+      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50">
         <p className="text-sm text-slate-300">Loading your workspace...</p>
       </main>
     );
@@ -93,5 +95,19 @@ export default function DashboardPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50">
+          <p className="text-sm text-slate-300">Loading dashboard...</p>
+        </main>
+      }
+    >
+      <DashboardInner />
+    </Suspense>
   );
 }
