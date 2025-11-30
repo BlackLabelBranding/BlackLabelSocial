@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, useState, useEffect } from "react";
+import { Suspense, useEffect, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-export default function LoginPage() {
+function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
@@ -40,7 +40,6 @@ export default function LoginPage() {
   }
 
   useEffect(() => {
-    // If already logged in, send to /app
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) router.push("/app");
     });
@@ -98,5 +97,19 @@ export default function LoginPage() {
         </p>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50">
+          <p className="text-sm text-slate-300">Loading login...</p>
+        </main>
+      }
+    >
+      <LoginInner />
+    </Suspense>
   );
 }
