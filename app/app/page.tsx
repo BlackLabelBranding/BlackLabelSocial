@@ -26,16 +26,37 @@ const QUICK_TEMPLATES: string[] = [
   "Highlight a customer testimonial or review.",
 ];
 
+type ScheduledPost = {
+  id: string;
+  caption: string;
+  platforms: string[];
+  scheduled_for: string;
+  status: string;
+  created_at: string;
+};
+
 function classNames(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
+}
+
+function formatDateTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Invalid date";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 type PostComposerProps = {
   workspaceId: string;
   userId: string;
+  onScheduled?: () => void;
 };
 
-function PostComposer({ workspaceId, userId }: PostComposerProps) {
+function PostComposer({ workspaceId, userId, onScheduled }: PostComposerProps) {
   const [caption, setCaption] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>([
     "X",
@@ -55,7 +76,7 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
   const maxXChars = 280;
   const charCount = caption.length;
   const hashtagCount =
-    caption.match(/#[\p{L}\d_]+/gu)?.length ?? 0; // counts #hashtags
+    caption.match(/#[\p{L}\d_]+/gu)?.length ?? 0;
   const wordCount =
     caption.trim().length === 0
       ? 0
@@ -83,7 +104,6 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
   };
 
   const handleGenerateAI = () => {
-    // Placeholder – later this will call your API/Edge function.
     const sample =
       "We’re leveling up social media for our brand with Black Label Social. 🚀\n\n" +
       "Schedule posts, stay consistent, and keep your message in front of the right people.\n\n" +
@@ -134,11 +154,8 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
       return;
     }
 
-    // Build scheduled datetime
     const scheduledFor = (() => {
-      if (!scheduledDate) {
-        return new Date(); // now
-      }
+      if (!scheduledDate) return new Date();
       const time = scheduledTime || "09:00";
       return new Date(`${scheduledDate}T${time}:00`);
     })();
@@ -166,7 +183,9 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
           } on ${selectedPlatforms.join(", ")}.`
         );
         setStatusType("success");
-        // setCaption(""); // uncomment if you want to clear after save
+        onScheduled?.(); // refresh list
+        // optional: clear caption
+        // setCaption("");
       }
     } catch (err: any) {
       console.error(err);
@@ -424,6 +443,143 @@ function PostComposer({ workspaceId, userId }: PostComposerProps) {
   );
 }
 
+type ScheduledPostsListProps = {
+  workspaceId: string;
+  refreshToken: number;
+};
+
+function ScheduledPostsList({ workspaceId, refreshToken }: ScheduledPostsListProps) {
+  const [posts, setPosts] = useState<ScheduledPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      setError(null);
+      const { data, error } = await supabase
+        .from("scheduled_posts")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("scheduled_for", { ascending: true })
+        .limit(50);
+
+      if (error) {
+        console.error(error);
+        setError(error.message || "Failed to load scheduled posts.");
+      } else {
+        setPosts((data || []) as ScheduledPost[]);
+      }
+      setLoading(false);
+    }
+
+    load();
+  }, [workspaceId, refreshToken]);
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    const { error } = await supabase
+      .from("scheduled_posts")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      console.error(error);
+      setError(error.message || "Failed to delete post.");
+    } else {
+      setPosts((prev) => prev.filter((p) => p.id !== id));
+    }
+    setDeletingId(null);
+  };
+
+  return (
+    <section className="max-w-6xl mx-auto mt-2">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 md:p-5 shadow-lg shadow-black/30">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-sm font-semibold">Scheduled posts</h2>
+            <p className="text-[11px] text-slate-400">
+              Upcoming posts for this workspace. Later we&apos;ll add editing,
+              duplication, and calendar drag-and-drop.
+            </p>
+          </div>
+        </div>
+
+        {loading && (
+          <p className="text-[11px] text-slate-400">Loading scheduled posts…</p>
+        )}
+
+        {!loading && error && (
+          <p className="text-[11px] text-red-300">{error}</p>
+        )}
+
+        {!loading && !error && posts.length === 0 && (
+          <p className="text-[11px] text-slate-400">
+            No scheduled posts yet. Use the composer above to schedule your
+            first one.
+          </p>
+        )}
+
+        {!loading && !error && posts.length > 0 && (
+          <div className="space-y-2 mt-2">
+            {posts.map((post) => (
+              <div
+                key={post.id}
+                className="flex flex-col md:flex-row md:items-center gap-2 justify-between border border-slate-800 rounded-xl px-3 py-2 bg-slate-950/60"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="font-semibold text-slate-100">
+                      {formatDateTime(post.scheduled_for)}
+                    </span>
+                    <span
+                      className={classNames(
+                        "px-2 py-0.5 rounded-full border text-[10px]",
+                        post.status === "scheduled" &&
+                          "bg-emerald-900/40 border-emerald-600 text-emerald-200",
+                        post.status === "failed" &&
+                          "bg-red-900/40 border-red-600 text-red-200",
+                        post.status === "sent" &&
+                          "bg-slate-900/60 border-slate-500 text-slate-200"
+                      )}
+                    >
+                      {post.status}
+                    </span>
+                    <span className="flex flex-wrap gap-1 text-slate-300">
+                      {post.platforms.map((p) => (
+                        <span
+                          key={p}
+                          className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px]"
+                        >
+                          {p}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-200 truncate">
+                    {post.caption}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 self-start md:self-center">
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(post.id)}
+                    disabled={deletingId === post.id}
+                    className="text-[11px] px-3 py-1 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {deletingId === post.id ? "Deleting…" : "Cancel"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DashboardInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -434,6 +590,8 @@ function DashboardInner() {
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const [postsRefreshToken, setPostsRefreshToken] = useState(0);
 
   const workspaceIdParam = searchParams.get("workspaceId");
 
@@ -449,7 +607,6 @@ function DashboardInner() {
 
       let effectiveWorkspaceId = workspaceIdParam ?? null;
 
-      // If no workspaceId in URL, try to find the first workspace for this user.
       if (!effectiveWorkspaceId) {
         const { data: member, error: memberError } = await supabase
           .from("workspace_members")
@@ -461,7 +618,6 @@ function DashboardInner() {
 
         if (!memberError && member && member.workspace_id) {
           effectiveWorkspaceId = member.workspace_id as string;
-          // Update the URL so future reloads/bookmarks have it.
           router.replace(`/app?workspaceId=${effectiveWorkspaceId}`);
         }
       }
@@ -542,7 +698,6 @@ function DashboardInner() {
       setNewWorkspaceName("");
       setCreatingWorkspace(false);
 
-      // Update URL so the composer can use it.
       router.replace(`/app?workspaceId=${ws.id}`);
     } catch (err: any) {
       console.error(err);
@@ -660,7 +815,22 @@ function DashboardInner() {
           </div>
         )}
 
-        {canSchedule && <PostComposer workspaceId={workspace!.id} userId={userId!} />}
+        {canSchedule && (
+          <PostComposer
+            workspaceId={workspace!.id}
+            userId={userId!}
+            onScheduled={() =>
+              setPostsRefreshToken((token) => token + 1)
+            }
+          />
+        )}
+
+        {canSchedule && (
+          <ScheduledPostsList
+            workspaceId={workspace!.id}
+            refreshToken={postsRefreshToken}
+          />
+        )}
 
         <div className="grid gap-4 md:grid-cols-2 max-w-6xl mx-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -678,11 +848,10 @@ function DashboardInner() {
               Next features we&apos;ll wire up:
             </p>
             <ul className="text-xs text-slate-300 space-y-1">
-              <li>• Save scheduled posts to Supabase per workspace (already live!)</li>
-              <li>• Scheduled posts list & filters</li>
               <li>• Calendar view with drag-to-reschedule</li>
               <li>• Real AI caption generator with tone presets</li>
               <li>• Per-platform variations and asset management</li>
+              <li>• Social account connections & auto-posting</li>
             </ul>
           </div>
         </div>
