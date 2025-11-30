@@ -792,7 +792,7 @@ function DashboardInner() {
                   <input
                     type="text"
                     className="flex-1 rounded-md border border-slate-700 bg-slate-950/70 px-3 py-2 text-xs text-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:border-slate-500"
-                    placeholder="e.g. Black Label Branding, Rebel Liz, Garza Unlimited"
+                    placeholder="e.g. Black Label Branding, Print Art and More, Garza Unlimited"
                     value={newWorkspaceName}
                     onChange={(e) => {
                       setNewWorkspaceName(e.target.value);
